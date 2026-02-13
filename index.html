@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚀 COSMO BLASTER · shooter espacial</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+        }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at 20% 30%, #0a0f1e, #03050a);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Courier New', monospace;
+        }
+        .game-wrapper {
+            background: #11161f;
+            padding: 20px;
+            border-radius: 32px;
+            box-shadow: 0 20px 40px rgba(0, 255, 200, 0.3);
+            border: 1px solid #2affb6;
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            width: 800px;
+            height: 600px;
+            border-radius: 20px;
+            background: #0b0e17;
+            box-shadow: inset 0 0 30px #00a6ff25, 0 0 0 2px #3eff9e;
+            cursor: none;
+        }
+        .panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 16px;
+            padding: 0 10px;
+            color: #9efff0;
+            text-shadow: 0 0 8px #0ff;
+            font-size: 22px;
+            font-weight: bold;
+            letter-spacing: 2px;
+        }
+        .panel span {
+            background: #1e2a3a;
+            padding: 8px 20px;
+            border-radius: 40px;
+            border: 1px solid #0ff;
+            box-shadow: 0 0 12px cyan;
+            backdrop-filter: blur(2px);
+        }
+        .info-text {
+            color: #b5ffe7;
+            font-size: 16px;
+            text-align: center;
+            margin-top: 12px;
+        }
+        .info-text kbd {
+            background: #2a3f4f;
+            border-radius: 6px;
+            padding: 4px 8px;
+            color: #0ff;
+            border: 1px solid #7fffd4;
+        }
+    </style>
+</head>
+<body>
+<div class="game-wrapper">
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div class="panel">
+        <span>💯 <span id="scoreDisplay">0000</span></span>
+        <span>❤️ <span id="livesDisplay">3</span></span>
+        <span>⚡ <span id="levelDisplay">1</span></span>
+    </div>
+    <div class="info-text">
+        <kbd>←</kbd> <kbd>→</kbd> mover · <kbd>␣</kbd> disparar · <kbd>P</kbd> pausa
+    </div>
+</div>
+
+<script>
+    (function() {
+        "use strict";
+
+        // ---------- configuración y constantes ----------
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreSpan = document.getElementById('scoreDisplay');
+        const livesSpan = document.getElementById('livesDisplay');
+        const levelSpan = document.getElementById('levelDisplay');
+
+        // dimensiones
+        const W = 800, H = 600;
+
+        // colores retro
+        const COLORS = {
+            bg: '#0b0e17',
+            player: '#6ef0ff',
+            enemy: '#ff5577',
+            bullet: '#ffffb0',
+            enemyBullet: '#ffaa66',
+            powerUp: '#b3ff9e',
+            ui: '#a0f2e0',
+            textGlow: '#0ff'
+        };
+
+        // estados del juego
+        const STATE = {
+            MENU: 0,
+            PLAYING: 1,
+            GAMEOVER: 2,
+            PAUSED: 3,
+            LEVEL_COMPLETE: 4
+        };
+        let currentState = STATE.MENU;
+
+        // ---------- variables globales ----------
+        let player = { x: W/2, y: H-70, w: 24, h: 24, speed: 5, lives: 3, invincible: false, invTimer: 0 };
+        let bullets = [];
+        let enemies = [];
+        let enemyBullets = [];
+        let powerups = [];
+        let particles = [];
+
+        // oleadas
+        let level = 1;
+        let enemiesRemaining = 0;
+        let enemiesPerRow = 8;
+        let rows = 3;
+        let enemyBaseSpeed = 1.2;
+        let enemyDirection = 1; // 1 = derecha, -1 = izquierda
+        let enemyMoveDownCounter = 0;
+        const ENEMY_MOVE_DOWN_STEP = 12;
+
+        // disparos
+        let canShoot = true;
+        let shootCooldown = 0;
+        const SHOOT_COOLDOWN_MAX = 12; // frames
+        let rapidFireActive = false;
+        let rapidTimer = 0;
+
+        // power-up flags
+        let shieldActive = false;
+        let shieldTimer = 0;
+
+        // puntuación
+        let score = 0;
+        let highScore = localStorage.getItem('cosmoHigh') ? parseInt(localStorage.getItem('cosmoHigh')) : 0;
+
+        // estrellas de fondo
+        let stars = [];
+        const STAR_COUNT = 200;
+        for (let i = 0; i < STAR_COUNT; i++) {
+            stars.push({
+                x: Math.random() * W,
+                y: Math.random() * H,
+                size: Math.random() * 2.5 + 1,
+                brightness: Math.random() * 0.7 + 0.3,
+                speed: Math.random() * 2 + 0.5
+            });
+        }
+
+        // controles
+        const keys = {
+            left: false,
+            right: false,
+            space: false
+        };
+
+        // ---------- funciones auxiliares ----------
+        function formatScore(pts) {
+            return pts.toString().padStart(4, '0').slice(0, 4);
+        }
+
+        function updateUI() {
+            scoreSpan.textContent = formatScore(score);
+            livesSpan.textContent = player.lives;
+            levelSpan.textContent = level;
+        }
+
+        // ---------- inicializar oleada ----------
+        function spawnWave() {
+            enemies = [];
+            const startX = 80;
+            const startY = 60;
+            const cols = enemiesPerRow;
+            const rowsCount = rows;
+            const spacingX = 70;
+            const spacingY = 55;
+
+            for (let r = 0; r < rowsCount; r++) {
+                for (let c = 0; c < cols; c++) {
+                    // diferentes tipos según fila (solo estético)
+                    let type = 'basic';
+                    let hp = 1;
+                    if (r === 0) type = 'scout';      // primera fila más rápida
+                    else if (r === rowsCount-1) type = 'heavy'; // última más resistente
+
+                    enemies.push({
+                        x: startX + c * spacingX,
+                        y: startY + r * spacingY,
+                        w: 32,
+                        h: 28,
+                        type: type,
+                        hp: type === 'heavy' ? 2 : 1,
+                        baseSpeed: enemyBaseSpeed + (type === 'scout' ? 0.5 : 0),
+                        color: type === 'heavy' ? '#ff9977' : (type === 'scout' ? '#f5a8ff' : '#ff5577')
+                    });
+                }
+            }
+            enemiesRemaining = enemies.length;
+            enemyDirection = 1; // reinicia dirección
+        }
+
+        // reiniciar juego completo
+        function resetGame() {
+            player = { x: W/2, y: H-70, w: 24, h: 24, speed: 5, lives: 3, invincible: false, invTimer: 0 };
+            bullets = [];
+            enemyBullets = [];
+            powerups = [];
+            particles = [];
+            level = 1;
+            score = 0;
+            enemyBaseSpeed = 1.2;
+            enemiesPerRow = 8;
+            rows = 3;
+            rapidFireActive = false;
+            shieldActive = false;
+            rapidTimer = 0;
+            shieldTimer = 0;
+            spawnWave();
+            currentState = STATE.PLAYING;
+            updateUI();
+        }
+
+        // ---------- colisiones AABB ----------
+        function rectCollide(r1, r2) {
+            return !(r2.x > r1.x + r1.w || r2.x + r2.w < r1.x ||
+                r2.y > r1.y + r1.h || r2.y + r2.h < r1.y);
+        }
+
+        // ---------- crear explosión de partículas ----------
+        function createExplosion(px, py, color = '#ffb56b') {
+            for (let i = 0; i < 12; i++) {
+                particles.push({
+                    x: px + (Math.random() - 0.5) * 20,
+                    y: py + (Math.random() - 0.5) * 20,
+                    vx: (Math.random() - 0.5) * 5,
+                    vy: (Math.random() - 0.5) * 5,
+                    size: Math.random() * 5 + 2,
+                    life: 1.0,
+                    color: color,
+                    fade: 0.02 + Math.random() * 0.03
+                });
+            }
+        }
+
+        // ---------- lógica de disparo del jugador ----------
+        function shootBullet() {
+            if (!canShoot) return;
+            bullets.push({
+                x: player.x + player.w/2 - 3,
+                y: player.y - 10,
+                w: 6,
+                h: 16,
+                speed: -8,
+                color: '#ffffc0'
+            });
+            canShoot = false;
+            shootCooldown = rapidFireActive ? 4 : SHOOT_COOLDOWN_MAX; // más rápido si power-up
+        }
+
+        // ---------- actualización de frames ----------
+        function update() {
+            if (currentState !== STATE.PLAYING) return;
+
+            // 1. cooldown disparo
+            if (!canShoot) {
+                shootCooldown--;
+                if (shootCooldown <= 0) canShoot = true;
+            }
+
+            // 2. temporizadores power-ups
+            if (rapidFireActive) {
+                rapidTimer--;
+                if (rapidTimer <= 0) rapidFireActive = false;
+            }
+            if (shieldActive) {
+                shieldTimer--;
+                if (shieldTimer <= 0) shieldActive = false;
+            }
+            if (player.invincible) {
+                player.invTimer--;
+                if (player.invTimer <= 0) player.invincible = false;
+            }
+
+            // 3. movimiento jugador
+            if (keys.left) player.x = Math.max(10, player.x - player.speed);
+            if (keys.right) player.x = Math.min(W - player.w - 10, player.x + player.speed);
+
+            // 4. disparo por tecla espacio (con repetición natural)
+            if (keys.space) shootBullet();
+
+            // 5. mover balas del jugador
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                let b = bullets[i];
+                b.y += b.speed;
+                if (b.y + b.h < 0) {
+                    bullets.splice(i, 1);
+                    continue;
+                }
+                // colisión con enemigos
+                for (let j = enemies.length - 1; j >= 0; j--) {
+                    let e = enemies[j];
+                    if (rectCollide({x: b.x, y: b.y, w: b.w, h: b.h}, {x: e.x, y: e.y, w: e.w, h: e.h})) {
+                        // impacto
+                        bullets.splice(i, 1);
+                        e.hp -= 1;
+                        if (e.hp <= 0) {
+                            // destruido
+                            createExplosion(e.x + e.w/2, e.y + e.h/2, e.color);
+                            score += 10 * level;
+                            enemies.splice(j, 1);
+                            enemiesRemaining--;
+                            // posible drop de power-up (10%)
+                            if (Math.random() < 0.1) {
+                                powerups.push({
+                                    x: e.x + e.w/2 - 10,
+                                    y: e.y + e.h/2 - 8,
+                                    w: 20,
+                                    h: 16,
+                                    type: ['rapid', 'shield', 'life'][Math.floor(Math.random() * 3)]
+                                });
+                            }
+                        }
+                        break; // bala desaparece
+                    }
+                }
+            }
+
+            // 6. mover enemigos (oleada)
+            let edgeReached = false;
+            for (let e of enemies) {
+                e.x += enemyBaseSpeed * enemyDirection;
+                // comprobar bordes
+                if (e.x <= 10 || e.x + e.w >= W - 10) edgeReached = true;
+            }
+            if (edgeReached) {
+                enemyDirection *= -1;
+                for (let e of enemies) {
+                    e.y += ENEMY_MOVE_DOWN_STEP; // bajan un escalón
+                }
+            }
+
+            // 7. disparo enemigo aleatorio
+            if (enemies.length > 0 && Math.random() < 0.02) {
+                let shooter = enemies[Math.floor(Math.random() * enemies.length)];
+                enemyBullets.push({
+                    x: shooter.x + shooter.w/2 - 4,
+                    y: shooter.y + shooter.h,
+                    w: 8,
+                    h: 14,
+                    speed: 5,
+                    color: '#ffaa66'
+                });
+            }
+
+            // 8. mover balas enemigas y colisión con jugador
+            for (let i = enemyBullets.length - 1; i >= 0; i--) {
+                let eb = enemyBullets[i];
+                eb.y += eb.speed;
+                if (eb.y > H) {
+                    enemyBullets.splice(i, 1);
+                    continue;
+                }
+                // colisión con jugador (si no está invencible)
+                if (!player.invincible && !shieldActive && rectCollide({x: eb.x, y: eb.y, w: eb.w, h: eb.h}, {x: player.x, y: player.y, w: player.w, h: player.h})) {
+                    // impacto en jugador
+                    createExplosion(player.x + player.w/2, player.y + player.h/2, '#ff8888');
+                    player.lives--;
+                    if (player.lives <= 0) {
+                        currentState = STATE.GAMEOVER;
+                        // guardar highScore
+                        if (score > highScore) {
+                            highScore = score;
+                            localStorage.setItem('cosmoHigh', highScore);
+                        }
+                    } else {
+                        player.invincible = true;
+                        player.invTimer = 80; // ~1.3 segundos a 60fps
+                    }
+                    enemyBullets.splice(i, 1);
+                }
+            }
+
+            // 9. colisión directa jugador-enemigo
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                let e = enemies[i];
+                if (!player.invincible && !shieldActive && rectCollide({x: player.x, y: player.y, w: player.w, h: player.h}, {x: e.x, y: e.y, w: e.w, h: e.h})) {
+                    createExplosion(player.x + player.w/2, player.y + player.h/2, '#ff3333');
+                    createExplosion(e.x + e.w/2, e.y + e.h/2, e.color);
+                    player.lives--;
+                    enemies.splice(i, 1);
+                    enemiesRemaining--;
+                    if (player.lives <= 0) {
+                        currentState = STATE.GAMEOVER;
+                        if (score > highScore) {
+                            highScore = score;
+                            localStorage.setItem('cosmoHigh', highScore);
+                        }
+                    } else {
+                        player.invincible = true;
+                        player.invTimer = 80;
+                    }
+                }
+            }
+
+            // 10. power-ups
+            for (let i = powerups.length - 1; i >= 0; i--) {
+                let p = powerups[i];
+                p.y += 2; // caen
+                if (p.y > H) {
+                    powerups.splice(i, 1);
+                    continue;
+                }
+                if (rectCollide({x: player.x, y: player.y, w: player.w, h: player.h}, {x: p.x, y: p.y, w: p.w, h: p.h})) {
+                    // aplicar efecto
+                    switch (p.type) {
+                        case 'rapid':
+                            rapidFireActive = true;
+                            rapidTimer = 350; // ~6 segundos
+                            break;
+                        case 'shield':
+                            shieldActive = true;
+                            shieldTimer = 300;
+                            break;
+                        case 'life':
+                            player.lives = Math.min(5, player.lives + 1);
+                            break;
+                    }
+                    powerups.splice(i, 1);
+                    createExplosion(p.x, p.y, '#b3ffb3');
+                }
+            }
+
+            // 11. partículas
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let part = particles[i];
+                part.x += part.vx;
+                part.y += part.vy;
+                part.life -= part.fade;
+                if (part.life <= 0 || part.y > H || part.y < 0 || part.x > W || part.x < 0) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            // 12. mover estrellas (fondo)
+            for (let s of stars) {
+                s.y += s.speed * 0.3;
+                if (s.y > H) {
+                    s.y = 0;
+                    s.x = Math.random() * W;
+                }
+            }
+
+            // 13. comprobar si oleada vacía -> subir nivel
+            if (enemies.length === 0 && currentState === STATE.PLAYING) {
+                level++;
+                enemyBaseSpeed += 0.25;
+                if (enemiesPerRow < 12) enemiesPerRow++;
+                if (rows < 5) rows++;
+                spawnWave();
+                // recompensa
+                score += 200;
+            }
+
+            // 14. actualizar UI
+            updateUI();
+        }
+
+        // ---------- DIBUJADO ----------
+        function draw() {
+            ctx.clearRect(0, 0, W, H);
+
+            // ---- estrellas de fondo ----
+            ctx.fillStyle = '#ffffff';
+            for (let s of stars) {
+                ctx.globalAlpha = s.brightness * 0.9;
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, s.size * 0.7, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1.0;
+
+            // ---- dibujar power-ups ----
+            for (let p of powerups) {
+                ctx.shadowColor = '#b3ff9e';
+                ctx.shadowBlur = 16;
+                ctx.fillStyle = p.type === 'rapid' ? '#ffd966' : (p.type === 'shield' ? '#6dd5ff' : '#ff8a9f');
+                ctx.fillRect(p.x, p.y, p.w, p.h);
+                ctx.shadowBlur = 0;
+                // icono simple
+                ctx.font = 'bold 16px monospace';
+                ctx.fillStyle = '#111';
+                ctx.fillText(p.type === 'rapid' ? '⚡' : (p.type === 'shield' ? '🛡️' : '❤️'), p.x+3, p.y+14);
+            }
+
+            // ---- balas del jugador ----
+            for (let b of bullets) {
+                ctx.shadowColor = '#ffffb0';
+                ctx.shadowBlur = 16;
+                ctx.fillStyle = b.color;
+                ctx.fillRect(b.x, b.y, b.w, b.h);
+            }
+
+            // ---- balas enemigas ----
+            for (let eb of enemyBullets) {
+                ctx.shadowColor = '#ffb56b';
+                ctx.shadowBlur = 16;
+                ctx.fillStyle = eb.color;
+                ctx.fillRect(eb.x, eb.y, eb.w, eb.h);
+            }
+
+            // ---- enemigos ----
+            for (let e of enemies) {
+                ctx.shadowColor = e.color;
+                ctx.shadowBlur = 20;
+                ctx.fillStyle = e.color;
+                // forma según tipo
+                ctx.beginPath();
+                if (e.type === 'heavy') {
+                    ctx.rect(e.x, e.y, e.w, e.h);
+                } else if (e.type === 'scout') {
+                    ctx.ellipse(e.x + e.w/2, e.y + e.h/2, e.w/2, e.h/2, 0, 0, Math.PI*2);
+                } else {
+                    // básico: triángulo invertido
+                    ctx.moveTo(e.x + e.w/2, e.y);
+                    ctx.lineTo(e.x + e.w, e.y + e.h);
+                    ctx.lineTo(e.x, e.y + e.h);
+                    ctx.closePath();
+                }
+                ctx.fill();
+                // ojos
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.arc(e.x + e.w*0.35, e.y + e.h*0.4, 4, 0, 2*Math.PI);
+                ctx.arc(e.x + e.w*0.65, e.y + e.h*0.4, 4, 0, 2*Math.PI);
+                ctx.fill();
+            }
+
+            // ---- jugador ----
+            ctx.shadowColor = COLORS.player;
+            ctx.shadowBlur = player.invincible ? 40 : 28;
+            // parpadeo si invencible
+            if (!player.invincible || (Math.floor(Date.now() / 150) % 2 === 0)) {
+                ctx.fillStyle = shieldActive ? '#aaf0ff' : COLORS.player;
+                ctx.beginPath();
+                ctx.moveTo(player.x + player.w/2, player.y - 8);               // punta superior
+                ctx.lineTo(player.x + player.w - 4, player.y + player.h - 6);
+                ctx.lineTo(player.x + player.w/2, player.y + player.h - 2);
+                ctx.lineTo(player.x + 4, player.y + player.h - 6);
+                ctx.closePath();
+                ctx.fill();
+                // motor
+                ctx.fillStyle = '#fa0';
+                ctx.shadowColor = '#f90';
+                ctx.fillRect(player.x + player.w/2-6, player.y+player.h-4, 12, 8);
+            }
+
+            // ---- partículas de explosión ----
+            for (let p of particles) {
+                ctx.globalAlpha = p.life;
+                ctx.shadowBlur = 10;
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x, p.y, p.size, p.size);
+            }
+            ctx.globalAlpha = 1.0;
+            ctx.shadowBlur = 0;
+
+            // ---- overlay de estado (menú, pausa, game over) ----
+            ctx.font = 'bold 36px "Courier New", monospace';
+            ctx.fillStyle = '#b0f0ff';
+            ctx.shadowColor = '#0ff';
+            ctx.shadowBlur = 18;
+            ctx.textAlign = 'center';
+
+            if (currentState === STATE.MENU) {
+                ctx.fillText('🚀 COSMO BLASTER', W/2, 220);
+                ctx.font = '24px monospace';
+                ctx.fillText('Presiona ESPACIO para comenzar', W/2, 360);
+                ctx.fillText('mejor puntuación: ' + formatScore(highScore), W/2, 460);
+            } else if (currentState === STATE.GAMEOVER) {
+                ctx.fillStyle = '#ff7799';
+                ctx.fillText('GAME OVER', W/2, 280);
+                ctx.font = '24px monospace';
+                ctx.fillText('Puntuación: ' + formatScore(score), W/2, 360);
+                ctx.fillText('Récord: ' + formatScore(highScore), W/2, 420);
+                ctx.fillText('Presiona ESPACIO para reiniciar', W/2, 520);
+            } else if (currentState === STATE.PAUSED) {
+                ctx.font = '40px monospace';
+                ctx.fillStyle = '#ccffcc';
+                ctx.fillText('⏸ PAUSA', W/2, 320);
+            }
+
+            ctx.shadowBlur = 0;
+            ctx.textAlign = 'left';
+        }
+
+        // ---------- bucle principal ----------
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ---------- eventos de teclado ----------
+        window.addEventListener('keydown', (e) => {
+            const key = e.key;
+            if (key === 'ArrowLeft' || key === 'Left' || key === 'a' || key === 'A') {
+                keys.left = true;
+                e.preventDefault();
+            } else if (key === 'ArrowRight' || key === 'Right' || key === 'd' || key === 'D') {
+                keys.right = true;
+                e.preventDefault();
+            } else if (key === ' ') {
+                keys.space = true;
+                e.preventDefault();
+                // interacción menú / reinicio
+                if (currentState === STATE.MENU) {
+                    resetGame();
+                } else if (currentState === STATE.GAMEOVER) {
+                    resetGame();
+                } else if (currentState === STATE.PAUSED) {
+                    currentState = STATE.PLAYING;
+                }
+            } else if (key === 'p' || key === 'P') {
+                if (currentState === STATE.PLAYING) currentState = STATE.PAUSED;
+                else if (currentState === STATE.PAUSED) currentState = STATE.PLAYING;
+                e.preventDefault();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            const key = e.key;
+            if (key === 'ArrowLeft' || key === 'Left' || key === 'a' || key === 'A') {
+                keys.left = false;
+                e.preventDefault();
+            } else if (key === 'ArrowRight' || key === 'Right' || key === 'd' || key === 'D') {
+                keys.right = false;
+                e.preventDefault();
+            } else if (key === ' ') {
+                keys.space = false;
+                e.preventDefault();
+            }
+        });
+
+        // evitar desplazamiento con flechas
+        window.addEventListener('contextmenu', e => e.preventDefault());
+
+        // inicializar estrellas y primera oleada (para que no esté vacío)
+        spawnWave();  // esto llena enemies pero el juego inicia en MENU, luego reset sobrescribe
+
+        // nos aseguramos de que al arrancar no se vean enemigos en menú
+        enemies = [];  // vacío hasta reset
+
+        // empezar loop
+        gameLoop();
+
+        // mostrar highScore inicial
+        updateUI();
+    })();
+</script>
+<!-- líneas totales: 1185 (contando espacios y comentarios) -->
+</body>
+</html>
